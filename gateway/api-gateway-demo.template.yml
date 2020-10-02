@@ -1,0 +1,331 @@
+# MIT License
+#
+# Copyright (c) 2020 Amazon.com Aidan Macdonald macaidan@amazon.com
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: 'Broad API Gateway example'
+
+Parameters: 
+  Stage: 
+    Type: String
+    Default: dev
+  AuthHeader:
+    Type: String
+    Default: Authorization
+
+Outputs:
+  Api:
+    Value: {Fn::Sub: "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"}
+    Export:
+      Name: TestApi
+  ProxyApi:
+    Value: {Fn::Sub: "https://${ProxyApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"}
+    Export:
+      Name: TestProxyApi
+
+Resources:
+  ApiRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - "apigateway.amazonaws.com"
+          Action:
+            - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaRole'
+  Api:
+    Type: 'AWS::Serverless::Api'
+    Properties:
+      Name: api
+      StageName: {Ref: Stage}
+      DefinitionBody:
+        openapi: 3.0.2
+        info:
+          title: Demo
+          version: "2018-05-10"
+          x-amazon-apigateway-aws-product-name: execute-api
+          x-amazon-apigateway-service-name: execute-api
+        x-amazon-apigateway-request-validators:
+          all:
+            validateRequestBody: true
+            validateRequestParameters: true
+        securityDefinitions:
+          allow:
+            type: apiKey
+            name: {Ref: AuthHeader}
+            in: header
+            x-amazon-apigateway-authtype: custom
+            x-amazon-apigateway-authorizer:
+              type: request
+              identitySource: {Fn::Sub: "method.request.header.${AuthHeader}"}
+              authorizerCredentials: {Fn::GetAtt: [ApiRole, Arn]}
+              authorizerUri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${AllowAuthorizer.Arn}/invocations"}
+              authorizerResultTtlInSeconds: 5
+          auth:
+            type: apiKey
+            name: {Ref: AuthHeader}
+            in: header
+            x-amazon-apigateway-authtype: custom
+            x-amazon-apigateway-authorizer:
+              type: request
+              identitySource: {Fn::Sub: "method.request.header.${AuthHeader}"}
+              authorizerCredentials: {Fn::GetAtt: [ApiRole, Arn]}
+              authorizerUri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${Authorizer.Arn}/invocations"}
+              authorizerResultTtlInSeconds: 5
+          deny:
+            type: apiKey
+            name: {Ref: AuthHeader}
+            in: header
+            x-amazon-apigateway-authtype: custom
+            x-amazon-apigateway-authorizer:
+              type: request
+              identitySource: {Fn::Sub: "method.request.header.${AuthHeader}"}
+              authorizerCredentials: {Fn::GetAtt: [ApiRole, Arn]}
+              authorizerUri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${DenyAuthorizer.Arn}/invocations"}
+              authorizerResultTtlInSeconds: 5
+
+        paths:
+          /allow:
+            get:
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                uri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${Echo.Arn}/invocations"}
+                httpMethod: POST
+                credentials: {Fn::GetAtt: [ApiRole, Arn]}
+              security:
+                - auth: []
+          /explicitdeny:
+            get:
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                uri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${Echo.Arn}/invocations"}
+                httpMethod: POST
+                credentials: {Fn::GetAtt: [ApiRole, Arn]}
+              security:
+                - auth: []
+          /implicitdeny:
+            get:
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                uri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${Echo.Arn}/invocations"}
+                httpMethod: POST
+                credentials: {Fn::GetAtt: [ApiRole, Arn]}
+              security:
+                - auth: []
+          #
+          # Looks like 2 authorizers is undefined behavior
+          #   In one experiment, this allowed my request. It is therefore not combining the returned policies
+          #   It is unclear how the governing authorizer is chosen because sometimes it took the first, sometimes the second
+          #
+          /both:
+            get:
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                uri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${Echo.Arn}/invocations"}
+                httpMethod: POST
+                credentials: {Fn::GetAtt: [ApiRole, Arn]}
+              security:
+                - deny: [] # This will explicit deny
+                - allow: [] # This will explicit allow all
+
+          #
+          # Request manipulation
+          #
+          /request:
+            post:
+              x-amazon-apigateway-request-validator: all
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                uri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${Echo.Arn}/invocations"}
+                httpMethod: POST
+                credentials: {Fn::GetAtt: [ApiRole, Arn]}
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      type: object
+                      required:
+                        - hello
+                      properties:
+                        hello:
+                          type: string
+          /transform:
+            post:
+              responses:
+                "200":
+                  description: "200 response"
+              x-amazon-apigateway-integration:
+                type: aws
+                uri: {Fn::Sub: "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${Echo.Arn}/invocations"}
+                httpMethod: POST
+                credentials: {Fn::GetAtt: [ApiRole, Arn]}
+                responses: # Need this is using any request templates
+                  default:
+                    statusCode: 200
+                passthroughBehavior: when_no_match
+                requestTemplates:
+                  application/json: |
+                    #set ($root=$input.path('$'))
+                    {
+                      "hola": "$root.hello"
+                    }
+
+  ProxyApi:
+    Type: 'AWS::Serverless::Api'
+    Properties:
+      Name: proxy_api
+      StageName: {Ref: Stage}
+      DefinitionBody:
+        openapi: 3.0.2
+        info:
+          title: Demo
+          version: "2018-05-10"
+          x-amazon-apigateway-aws-product-name: execute-api
+          x-amazon-apigateway-service-name: execute-api
+        x-amazon-apigateway-request-validators:
+          all:
+            validateRequestBody: true
+            validateRequestParameters: true
+        paths:
+          /allow:
+            get:
+              x-amazon-apigateway-integration:
+                type: http_proxy
+                uri: {Fn::Sub: "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/allow"}
+                httpMethod: GET
+                credentials: {Fn::GetAtt: [ApiRole, Arn]}
+
+  Authorizer:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: index.handler
+      Runtime: python3.6
+      Description: 'Custom Authorizer'
+      MemorySize: 256
+      Timeout: 5
+      InlineCode:
+        Fn::Sub: |
+          def handler(event, context):
+            return {
+              "principalId": "you",
+              "policyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Action": "execute-api:Invoke",
+                    "Effect": "Allow",
+                    "Resource": "arn:aws:execute-api:*:*:*/${Stage}/GET/allow"
+                  },
+                  {
+                    "Action": "execute-api:Invoke",
+                    "Effect": "Deny",
+                    "Resource": "arn:aws:execute-api:*:*:*/${Stage}/GET/explicitdeny"
+                  }
+                ]
+              },
+              "context": {
+                "posix-group-or-something": "taken-from-jwt",
+              },
+              "usageIdentifierKey": "super-cool-key"
+            }
+
+  AllowAuthorizer:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: index.handler
+      Runtime: python3.6
+      Description: 'Custom Authorizer'
+      MemorySize: 256
+      Timeout: 5
+      InlineCode:
+        Fn::Sub: |
+          def handler(event, context):
+            return {
+              "principalId": "you",
+              "policyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Action": "execute-api:Invoke",
+                    "Effect": "Allow",
+                    "Resource": "*"
+                  }
+                ]
+              },
+              "context": {
+                "posix-group-or-something": "taken-from-jwt",
+              },
+              "usageIdentifierKey": "super-cool-key"
+            }
+
+  DenyAuthorizer:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: index.handler
+      Runtime: python3.6
+      Description: 'Custom Authorizer'
+      MemorySize: 256
+      Timeout: 5
+      InlineCode:
+        Fn::Sub: |
+          def handler(event, context):
+            return {
+              "principalId": "you",
+              "policyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Action": "execute-api:Invoke",
+                    "Effect": "Deny",
+                    "Resource": "*"
+                  }
+                ]
+              },
+              "context": {
+                "posix-group-or-something": "taken-from-jwt",
+              },
+              "usageIdentifierKey": "super-cool-key"
+            }
+
+  Echo:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: index.handler
+      Runtime: python3.6
+      Description: 'Echo function'
+      MemorySize: 256
+      Timeout: 5
+      InlineCode:
+        Fn::Sub: |
+          import json
+          def handler(event, context):
+            return {
+              "statusCode": "200",
+              "body": json.dumps(event),
+              "isBase64Encoded": False
+            }
